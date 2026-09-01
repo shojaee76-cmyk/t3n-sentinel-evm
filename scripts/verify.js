@@ -1,12 +1,14 @@
-// On-chain verification of the full t3n-sentinel EVM flow on Base Sepolia.
+// On-chain verification of the full t3n-sentinel EVM flow on Base (Sepolia or mainnet).
 // seal → recordProbe → listProviders → history → oracle → payment.
+// Idempotent: guards every init/config step; uses fresh addresses per run for evidence.
 const fs = require("fs");
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
-const { JsonRpcProvider, Wallet, Contract } = require("ethers");
+const { JsonRpcProvider, Wallet, Contract, ZeroAddress } = require("ethers");
 
 const RPC_URL = process.env.RPC_URL || "https://sepolia.base.org";
-const USDC = process.env.USDC_ADDRESS || "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const IS_MAINNET = RPC_URL.includes("mainnet");
+const USDC = process.env.USDC_ADDRESS || (IS_MAINNET ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" : "0x036CbD53842c5426634e7929541eC2318f3dCF7e");
 
 function abi(name) {
   // Recompile is heavy; use a minimal ABI from the artifact (hardhat artifacts exist)
@@ -25,7 +27,10 @@ async function main() {
   const payment = new Contract(d.SentinelPayment.address, abi("SentinelPayment"), op);
 
   const GITHUB = "github";
-  const PAYOUT = "0x1111111111111111111111111111111111111111";
+  // Fresh payout + fresh provider secret per run → clean evidence, idempotent.
+  const PAYOUT = Wallet.createRandom().address;
+  const PROVIDER = IS_MAINNET ? "github" : "github";
+  const SECRET = "sk-mainnet-" + Date.now().toString(36);
 
   console.log("=== VAULT FLOW ===");
   if (!(await vault.initialized())) {
@@ -36,13 +41,26 @@ async function main() {
     console.log("init — already initialized, skipping");
   }
 
-  let tx = await vault.seal(GITHUB, "sk-test-123");
+  let tx = await vault.seal(GITHUB, SECRET);
   await tx.wait();
   console.log("seal ✅", tx.hash);
 
   tx = await vault.recordProbe(GITHUB, 200, "");
-  await tx.wait();
-  console.log("recordProbe(200) ✅", tx.hash);
+  const rpRc = await tx.wait();
+  console.log("recordProbe(200) ✅", rpRc.hash, "block", rpRc.blockNumber);
+
+  // Public RPC read nodes lag the miner node that mined our tx — instead of
+  // reading at the receipt block (which may itself be too fresh for the read
+  // node), wait until the receipt block is at least ~3 blocks behind latest,
+  // then read "latest". Deterministic and lag-proof.
+  async function waitForBlock(tag) {
+    for (let i = 0; i < 30; i++) {
+      const latest = Number(await provider.getBlockNumber());
+      if (latest - Number(tag) >= 3) return;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  await waitForBlock(rpRc.blockNumber);
 
   const rows = await vault.listProviders();
   for (const r of rows) {
@@ -65,68 +83,94 @@ async function main() {
   }
 
   if (!(await oracle.isVerified(GITHUB))) {
-    tx = await oracle.submitAttestation(GITHUB, "tdx", "digest-abc123", 0);
+    tx = await oracle.submitAttestation(GITHUB, "tdx", "digest-" + Date.now().toString(36), 0);
     await tx.wait();
     console.log("submitAttestation ✅", tx.hash);
+    // Public RPC read nodes lag the miner — wait for attestation visibility,
+    // then probe (fresh digest avoids replay).
+    await waitForBlock((await provider.getBlockNumber()).toString()); // settle latest first
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 2500));
+      if (await oracle.isVerified(GITHUB)) break;
+    }
   } else {
     console.log("submitAttestation — already verified, skipping");
   }
   console.log("isVerified(github):", await oracle.isVerified(GITHUB));
 
   const rc = await (await oracle.probe(GITHUB, 200, "")).wait();
-  console.log("oracle probe tx ✅", rc.hash);
+  console.log("oracle probe tx ✅", rc.hash, "block", rc.blockNumber);
+  await waitForBlock(rc.blockNumber);
   console.log("epoch:", (await oracle.epoch()).toString());
 
   console.log("\n=== PAYMENT FLOW ===");
+  // Mainnet: native-ETH rail (token = address(0)) → real value transfer, no USDC needed.
+  // Sepolia: USDC rail (test token, mint available).
+  const PAYMENT_TOKEN = IS_MAINNET ? ZeroAddress : USDC;
+  const PRICE = IS_MAINNET ? 100000000000000n : 100n; // 0.0001 ETH on mainnet, 100 USDC(6dp) on sepolia
   if (!(await payment.initialized())) {
-    tx = await payment.init(op.address, op.address, USDC);
+    tx = await payment.init(op.address, op.address, PAYMENT_TOKEN);
     await tx.wait();
-    console.log("payment init ✅", tx.hash);
+    console.log("payment init ✅ (token =", PAYMENT_TOKEN, ")", tx.hash);
   } else {
     console.log("payment init — already initialized, skipping");
   }
 
   const cfg = await payment.providerConfig(GITHUB);
-  if (cfg.payout === "0x0000000000000000000000000000000000000000") {
-    tx = await payment.configureProvider(GITHUB, PAYOUT, 100, true);
+  if (cfg.payout === ZeroAddress) {
+    tx = await payment.configureProvider(GITHUB, PAYOUT, PRICE, true);
     await tx.wait();
-    console.log("configureProvider ✅", tx.hash);
+    console.log("configureProvider ✅ (paywalled, price=", PRICE.toString(), ")", tx.hash);
   } else {
     console.log("configureProvider — already set, skipping");
   }
 
-  // fund + approve USDC for the operator (teeWorker)
-  const usdc = new Contract(USDC, ["function mint(address,uint256)", "function balanceOf(address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], op);
-  // On Base Sepolia USDC is a real token — mint may not exist. Try faucet-style: check balance first.
-  const bal = await usdc.balanceOf(op.address);
-  console.log("operator USDC balance:", bal.toString());
-  if (bal < 1000n) {
-    console.log("  USDC balance too low — attempting mint (may fail on real USDC)");
-    try {
-      tx = await usdc.mint(op.address, 1000);
-      await tx.wait();
-      console.log("  minted 1000 USDC ✅", tx.hash);
-    } catch (e) {
-      console.log("  mint not available on real USDC:", e.message.slice(0, 80));
-    }
-  }
-  const bal2 = await usdc.balanceOf(op.address);
-  console.log("operator USDC balance after:", bal2.toString());
-
-  if (bal2 >= 100n) {
-    tx = await usdc.approve(await payment.getAddress(), 100);
-    await tx.wait();
-    console.log("approve 100 USDC ✅", tx.hash);
-
-    tx = await payment.probeWithPayment(GITHUB, 200, "paid-probe-ok", 100);
-    await tx.wait();
-    console.log("probeWithPayment ✅", tx.hash);
-
+  if (IS_MAINNET) {
+    // Native ETH rail: send the exact price as msg.value; payout must receive it.
+    tx = await payment.probeWithPayment(GITHUB, 200, "paid-probe-ok-mainnet", PRICE, { value: PRICE });
+    const ppRc = await tx.wait();
+    console.log("probeWithPayment (ETH) ✅", ppRc.hash, "block", ppRc.blockNumber);
+    await waitForBlock(ppRc.blockNumber);
+    const payoutBefore = await provider.getBalance(PAYOUT, ppRc.blockNumber - 1);
+    const payoutAfter = await provider.getBalance(PAYOUT);
     const ph = await payment.history();
     console.log(`payment history[0]: ${ph[0].provider} ${ph[0].verdict} paid=${ph[0].paid}`);
-    console.log("payout USDC balance:", (await usdc.balanceOf(PAYOUT)).toString());
+    console.log(`payout ETH balance: ${Number(payoutBefore) / 1e18} → ${Number(payoutAfter) / 1e18} (+${Number(payoutAfter - payoutBefore) / 1e18} ETH)`);
+    if (payoutAfter - payoutBefore !== PRICE) throw new Error("ETH transfer amount mismatch — BUG");
+    console.log("ETH transfer verified ✅ (+0.0001 ETH to fresh payout)");
   } else {
-    console.log("  SKIP paid probe — no USDC (real USDC needs faucet); free-probe path still verified by vault");
+    // fund + approve USDC for the operator (teeWorker)
+    const usdc = new Contract(USDC, ["function mint(address,uint256)", "function balanceOf(address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], op);
+    const bal = await usdc.balanceOf(op.address);
+    console.log("operator USDC balance:", bal.toString());
+    if (bal < 1000n) {
+      console.log("  USDC balance too low — attempting mint (may fail on real USDC)");
+      try {
+        tx = await usdc.mint(op.address, 1000);
+        await tx.wait();
+        console.log("  minted 1000 USDC ✅", tx.hash);
+      } catch (e) {
+        console.log("  mint not available on real USDC:", e.message.slice(0, 80));
+      }
+    }
+    const bal2 = await usdc.balanceOf(op.address);
+    console.log("operator USDC balance after:", bal2.toString());
+
+    if (bal2 >= 100n) {
+      tx = await usdc.approve(await payment.getAddress(), 100);
+      await tx.wait();
+      console.log("approve 100 USDC ✅", tx.hash);
+
+      tx = await payment.probeWithPayment(GITHUB, 200, "paid-probe-ok", 100);
+      await tx.wait();
+      console.log("probeWithPayment ✅", tx.hash);
+
+      const ph = await payment.history();
+      console.log(`payment history[0]: ${ph[0].provider} ${ph[0].verdict} paid=${ph[0].paid}`);
+      console.log("payout USDC balance:", (await usdc.balanceOf(PAYOUT)).toString());
+    } else {
+      console.log("  SKIP paid probe — no USDC (real USDC needs faucet); free-probe path still verified by vault");
+    }
   }
 
   console.log("\n=== ACL NEGATIVE (expect revert) ===");
