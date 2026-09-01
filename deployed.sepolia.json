@@ -1,0 +1,21 @@
+{
+  "chainId": 84532,
+  "deployer": "0xeD6533dB264c72c7Fe2E08bA7Ce554ABBE70F811",
+  "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  "at": "2026-09-01T22:47:25.056Z",
+  "SentinelVault": {
+    "address": "0xc5B32919e70f0182d224632b113a1A3d9320859A",
+    "tx": "0x9ef557153edb43e0cdb8fa549f60a0e7ae69302e17a195c7e5b84ce390bab542",
+    "block": 46267272
+  },
+  "SentinelOracle": {
+    "address": "0xDA0751D82FD843F93e0027D4fD23400F054d564D",
+    "tx": "0x2bda1ef5420f06d0a42bd5d8b2d26ffc2087396f792142821f366ff1f0a03ac9",
+    "block": 46267274
+  },
+  "SentinelPayment": {
+    "address": "0x610020338cC90240415E3CCb48bb3D950484e4E8",
+    "tx": "0xb1b9b8c850dfd9e503312d817799c6db9733ee866a8b3f68c5d5e3aa0200c09d",
+    "block": 46267276
+  }
+}
