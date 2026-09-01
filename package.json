@@ -1,0 +1,20 @@
+{
+  "name": "t3n-sentinel-evm",
+  "version": "1.0.0",
+  "description": "EVM (Solidity) port of t3n-sentinel — agent key vault & health sentinel. Chain #6.",
+  "license": "MIT",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy": "hardhat run scripts/deploy.js --network baseSepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "solc": "^0.8.36"
+  }
+}
