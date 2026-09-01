@@ -10,7 +10,7 @@ vault & health sentinel.** Chain #6 in the portfolio:
 | Starknet | Cairo | 43/43 tests, Sepolia live | `t3n-sentinel-starknet` |
 | Stellar | Soroban | 51/51 tests, testnet live | `t3n-sentinel-soroban` |
 | Aptos | Move | 42/42 tests, localnet verified | `t3n-sentinel-aptos` |
-| **EVM (Base)** | **Solidity** | **42/42 tests, Base Sepolia LIVE** | **this repo** |
+| **EVM (Base)** | **Solidity** | **42/42 tests, Base mainnet + Sepolia LIVE** | **this repo** |
 
 ---
 
@@ -60,52 +60,75 @@ npx hardhat test
 | `SentinelOracle` | 11 | init, submitAttestation (operator-gated, stale-epoch, replay, unknown-type reverts), probe (verified emits ProbeFired / unverified reverts), rotateEpoch invalidation, isVerified, attestationDigest |
 | `SentinelPayment` | 11 | init, configureProvider (authority-gated, unknown-provider), free probe, paywalled probe (without payment reverts PaywallRequired, wrong amount reverts PaymentMismatch, exact USDC payment succeeds + transfers) |
 
-## Live deployment — Base Sepolia (mainnet-class L2)
+## Live deployment
 
-Deployed 2026-09-01 from the proven x402-demo deploy path (solc + ethers +
-`OPERATOR_KEY`):
+**Base mainnet (LIVE, 2026-09-01)** — deployed from the proven x402-demo deploy
+path (solc + ethers + `OPERATOR_KEY`):
+
+- **SentinelVault**: [`0x21CD456267da9e0836b8F8bbD68FfB93fe0da146`](https://base.blockscout.com/address/0x21CD456267da9e0836b8F8bbD68FfB93fe0da146) — deploy tx `0x420731db...`
+- **SentinelOracle**: [`0x4fA2b93121479D2D7C1eD68da3cbB9D16E51c99B`](https://base.blockscout.com/address/0x4fA2b93121479D2D7C1eD68da3cbB9D16E51c99B) — deploy tx `0xf0aaf5cb...`
+- **SentinelPayment**: [`0x40B98Ae8268270645081C5Fd738948869f27f826`](https://base.blockscout.com/address/0x40B98Ae8268270645081C5Fd738948869f27f826) — deploy tx `0xbe58c219...`
+- Deployer / authority / teeWorker: `0xeD6533dB264c72c7Fe2E08bA7Ce554ABBE70F811`
+- USDC (Base mainnet, Circle): `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
+- Payment rail on mainnet initialized with **native ETH** (token = address(0)) —
+  a real value-transfer micropayment probe was verified on-chain.
+
+**Base Sepolia (testnet, 2026-09-01)** — original deploy:
 
 - **SentinelVault**: [`0xc5B32919e70f0182d224632b113a1A3d9320859A`](https://base-sepolia.blockscout.com/address/0xc5B32919e70f0182d224632b113a1A3d9320859A) — deploy tx `0x9ef55715...`
 - **SentinelOracle**: [`0xDA0751D82FD843F93e0027D4fD23400F054d564D`](https://base-sepolia.blockscout.com/address/0xDA0751D82FD843F93e0027D4fD23400F054d564D) — deploy tx `0x2bda1ef5...`
 - **SentinelPayment**: [`0x610020338cC90240415E3CCb48bb3D950484e4E8`](https://base-sepolia.blockscout.com/address/0x610020338cC90240415E3CCb48bb3D950484e4E8) — deploy tx `0xb1b9b8c8...`
-- Deployer / authority / teeWorker: `0xeD6533dB264c72c7Fe2E08bA7Ce554ABBE70F811`
 - USDC (Base Sepolia): `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 
-### On-chain verified flow (all real txs on Base Sepolia)
+### On-chain verified flow (all real txs)
+
+**Base mainnet** (2026-09-01):
 
 ```
-1. vault.init(authority, worker)        → success
-2. vault.seal("github", "sk-test-123")  → tx 0x4ab3743697... / 0xb4d5a66f...
-3. vault.recordProbe("github", 200)     → tx 0x5c5abef552... / 0x5be3f7f1...
+1. vault.init(authority, worker)        → tx 0xca4bd274...
+2. vault.seal("github", sk-mainnet-*)   → tx 0x3b3ba871...
+3. vault.recordProbe("github", 200)     → tx 0x1677f93b... (block 50757427)
 4. vault.listProviders()                → github: isSealed=true, verdict=VALID
-                                         groq/openrouter/openai: isSealed=false
 5. vault.history()                      → [github, VALID, http=200,
                                           detail="key accepted by provider"]
-6. vault.vaultInfo()                    → (0xeD6533..., 0xeD6533..., 1)
-7. oracle.init → submitAttestation(github, tdx, digest-abc123, epoch 0)
+6. oracle.init → submitAttestation(github, tdx, digest-*, epoch 0)
    → isVerified(github) = true
-8. oracle.probe(github, 200)            → tx 0x05811594... ; on-chain event
-   ProbeFired { provider: "github", httpCode: 200, epoch: 0, verdict: "VALID" }
-   (log at 0xDA0751...: topic0 0x463b537b..., data decodes to github/200/0/VALID)
-9. payment.init → configureProvider(github, payout, 100, paywalled=true)
-10. USDC approve 100 → probeWithPayment(github, 200, "paid-probe-ok", 100)
-    → tx 0x9df99370... ; payment history[0] = {github, VALID, paid=100}
-    payout USDC balance 508,479,837 → 508,480,037 (+100)
-11. ACL negative: recordProbe("nope") → reverted (UnknownProvider)
+7. oracle.probe(github, 200)            → tx 0x951a1e17... (block 50757433)
+   → ProbeFired { provider: github, httpCode: 200, epoch: 0, verdict: "VALID" }
+   (log at 0x4fA2b9...: topic0 0x463b537b...)
+8. payment.init(…, token=0x0)           → native-ETH rail (mainnet)
+9. payment.configureProvider(github, payout, 0.0001 ETH, paywalled=true)
+10. probeWithPayment(github, 200, "paid-probe-ok-mainnet", 0.0001 ETH, {value})
+    → tx 0x9f5b15f8... (block 50757446) ; payment history[0] = {github, VALID,
+    paid=100000000000000} ; payout ETH balance 0 → 0.0001 (+0.0001 ETH verified)
+11. ACL negative: recordProbe("nope")   → reverted (UnknownProvider)
 ```
+
+**Base Sepolia** (2026-09-01, original): the same flow with USDC — see
+`deployed.sepolia.json` + the verify transcript in the commit history.
 
 ## Reproduce
 
 ```bash
-# 1. env: copy OPERATOR_KEY (Base Sepolia funded) + RPC from x402-demo/.env
+# 1. env: copy OPERATOR_KEY (funded) + RPC from x402-demo/.env
 cp ../x402-demo/.env .env
 
-# 2. deploy
+# 2. choose chain: Sepolia (default) or mainnet
+#    RPC_URL=https://mainnet.base.org  → mainnet (chainId 8453, mainnet USDC)
+#    RPC_URL=https://sepolia.base.org  → Sepolia (chainId 84532)
+
+# 3. deploy
 npm run deploy          # deploys all 3, writes deployed.json
 
-# 3. verify the full flow on-chain
+# 4. verify the full flow on-chain
 node scripts/verify.js  # idempotent — safe to re-run
 ```
+
+The deploy/verify scripts auto-detect the chain from `RPC_URL`: mainnet uses
+Circle USDC + native-ETH payment rail; Sepolia uses the test USDC. Reads wait
+for the receipt block to settle ~3 blocks behind `latest` (public RPC read
+nodes lag the miner node — a naive `latest` read right after a tx can miss
+it).
 
 See `scripts/deploy.js` + `scripts/verify.js` for the complete sequence.
 
@@ -122,8 +145,10 @@ test/
   SentinelOracle.test.js  # 11 tests
   SentinelPayment.test.js # 11 tests
 scripts/
-  deploy.js               # solc+ethers deploy to Base Sepolia
+  deploy.js               # solc+ethers deploy (chain auto-detect)
   verify.js               # idempotent on-chain verification
+deployed.json             # current chain (mainnet) addresses
+deployed.sepolia.json     # Base Sepolia addresses (preserved)
 ```
 
 ## License
